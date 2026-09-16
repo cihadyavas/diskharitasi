@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Disk Haritası
+Name[en]=Disk Map
+Comment=Disk kullanımını iç içe kutular olarak gösterir
+Comment[en]=Shows disk usage as nested boxes (treemap)
+Exec=diskharitasi %f
+Icon=diskharitasi
+Terminal=false
+Categories=Utility;
+StartupWMClass=diskharitasi
