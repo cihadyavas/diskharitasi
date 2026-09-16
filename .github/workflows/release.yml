@@ -18,10 +18,12 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: aarch64
     runs-on: ${{ matrix.runner }}
-    # Eski glibc (Debian 11, 2.31) üzerinde derle: yeni dağıtımların hepsinde çalışsın.
-    container: debian:bullseye
+    # Eski glibc (Ubuntu 20.04, 2.31) üzerinde derle: yeni dağıtımların hepsinde çalışsın.
+    container: ubuntu:20.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Araçlar
         run: |
           apt-get update
