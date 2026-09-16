@@ -72,7 +72,7 @@ pub enum SortKey {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            lang: Lang::Tr,
+            lang: Lang::from_env(),
             show_free: true,
             one_fs: true,
             min_px: 3.0,
@@ -1269,6 +1269,7 @@ impl App {
             "zoomout" => self.apply(Action::ZoomOut, ctx),
             "free" => self.s.show_free = !self.s.show_free,
             "list" => self.apply(Action::SetListView(true), ctx),
+            "en" => self.s.lang = Lang::En,
             "map" => self.apply(Action::SetListView(false), ctx),
             "classic" => self.s.classic_layout = !self.s.classic_layout,
             "settings" => self.show_settings = !self.show_settings,

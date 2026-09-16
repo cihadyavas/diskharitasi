@@ -7,6 +7,17 @@ pub enum Lang {
     En,
 }
 
+impl Lang {
+    /// İlk açılışta sistem diline göre: Türkçe sistemde Türkçe, diğerlerinde İngilizce.
+    pub fn from_env() -> Lang {
+        let v = ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .iter()
+            .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+            .unwrap_or_default();
+        if v.starts_with("tr") { Lang::Tr } else { Lang::En }
+    }
+}
+
 pub struct T {
     pub app: &'static str,
     pub open: &'static str,

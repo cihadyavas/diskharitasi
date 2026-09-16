@@ -18,28 +18,28 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: aarch64
     runs-on: ${{ matrix.runner }}
-    # Eski glibc (Ubuntu 20.04, 2.31) üzerinde derle: yeni dağıtımların hepsinde çalışsın.
+    # Build against an old glibc (Ubuntu 20.04, 2.31) so the binary runs on current distros.
     container: ubuntu:20.04
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
       - uses: actions/checkout@v5
-      - name: Araçlar
+      - name: Toolchain
         run: |
           apt-get update
           apt-get install -y --no-install-recommends curl ca-certificates build-essential
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-      - name: Derle
+      - name: Build
         run: |
           . "$HOME/.cargo/env"
           cargo test --release
           cargo build --release
-      - name: Paketle
+      - name: Package
         run: |
           V="${GITHUB_REF_NAME}"
           D="diskharitasi-${V}-linux-${{ matrix.arch }}"
           mkdir "$D"
-          cp target/release/diskharitasi packaging/diskharitasi.desktop packaging/kur.sh assets/diskharitasi.svg README.md LICENSE "$D/"
+          cp target/release/diskharitasi packaging/diskharitasi.desktop packaging/install.sh assets/diskharitasi.svg README.md LICENSE "$D/"
           tar czf "$D.tar.gz" "$D"
           sha256sum "$D.tar.gz" > "$D.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
@@ -58,3 +58,4 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: diskharitasi-*
+          generate_release_notes: true
