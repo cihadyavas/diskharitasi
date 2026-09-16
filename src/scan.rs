@@ -70,7 +70,7 @@ pub fn statvfs(path: &Path) -> Option<(u64, u64)> {
     Some((st.f_blocks as u64 * frsize, st.f_bavail as u64 * frsize))
 }
 
-fn is_mount_point(path: &Path) -> bool {
+pub fn is_mount_point(path: &Path) -> bool {
     let Ok(md) = fs::metadata(path) else { return false };
     match path.parent() {
         None => true,

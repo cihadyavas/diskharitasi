@@ -64,6 +64,16 @@ pub struct T {
     pub about_text: &'static str,
     pub empty_hint: &'static str,
     pub not_found: &'static str,
+    pub map: &'static str,
+    pub list: &'static str,
+    pub layout_style: &'static str,
+    pub squarified: &'static str,
+    pub classic: &'static str,
+    pub protect_system: &'static str,
+    pub protected_msg: &'static str,
+    pub col_name: &'static str,
+    pub col_share: &'static str,
+    pub col_date: &'static str,
 }
 
 pub const TR: T = T {
@@ -123,6 +133,16 @@ pub const TR: T = T {
     about_text: "Disk kullanımını iç içe kutular (treemap) olarak gösterir.",
     empty_hint: "Taramak için «Aç»",
     not_found: "Bulunamadı",
+    map: "Harita",
+    list: "Liste",
+    layout_style: "Biçim:",
+    squarified: "Kareye yakın",
+    classic: "Klasik (SpaceMonger 1.4)",
+    protect_system: "Sistem klasörlerini silmeye karşı koru",
+    protected_msg: "Korumalı konum: sistem klasörü, ev klasörü ya da bağlama noktası silinemez.",
+    col_name: "Ad",
+    col_share: "Pay",
+    col_date: "Değiştirilme",
 };
 
 pub const EN: T = T {
@@ -182,6 +202,16 @@ pub const EN: T = T {
     about_text: "Shows disk usage as nested boxes (treemap).",
     empty_hint: "Click “Open” to scan",
     not_found: "Not found",
+    map: "Map",
+    list: "List",
+    layout_style: "Style:",
+    squarified: "Squarified",
+    classic: "Classic (SpaceMonger 1.4)",
+    protect_system: "Protect system folders from deletion",
+    protected_msg: "Protected location: system folders, the home folder and mount points cannot be deleted.",
+    col_name: "Name",
+    col_share: "Share",
+    col_date: "Modified",
 };
 
 pub fn t(lang: Lang) -> &'static T {

@@ -53,6 +53,20 @@ pub struct Settings {
     pub animated_zoom: bool,
     pub disable_delete: bool,
     pub last_path: String,
+    pub classic_layout: bool,
+    pub protect_system: bool,
+    pub list_view: bool,
+    pub list_sort: SortKey,
+    pub list_asc: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortKey {
+    Name,
+    #[default]
+    Size,
+    Files,
+    Date,
 }
 
 impl Default for Settings {
@@ -73,6 +87,11 @@ impl Default for Settings {
             animated_zoom: true,
             disable_delete: false,
             last_path: String::new(),
+            classic_layout: false,
+            protect_system: true,
+            list_view: false,
+            list_sort: SortKey::Size,
+            list_asc: false,
         }
     }
 }
@@ -89,6 +108,9 @@ enum Action {
     CopyPath(u32),
     AskDelete(u32),
     Scan(PathBuf),
+    SetListView(bool),
+    /// Liste başlığına tıklama: aynı sütunsa yönü çevir.
+    Sort(SortKey),
 }
 
 #[derive(Clone, Copy)]
@@ -111,7 +133,7 @@ struct OpenDialog {
     path: String,
 }
 
-type LayoutKey = (u32, Rect, i32, i32, u64);
+type LayoutKey = (u32, Rect, i32, i32, u64, bool);
 
 pub struct App {
     s: Settings,
@@ -217,7 +239,7 @@ impl App {
             return;
         }
         self.anim = None;
-        if self.s.animated_zoom {
+        if self.s.animated_zoom && !self.s.list_view {
             if tree.is_ancestor_or_self(self.view, target) {
                 if let Some(it) = self.items.iter().find(|it| it.node == target) {
                     self.anim = Some(Anim { start: now, kind: AnimKind::In(it.rect) });
@@ -277,11 +299,38 @@ impl App {
                 }
             }
             Action::AskDelete(id) => {
-                if !self.s.disable_delete {
+                if self.is_protected(id) {
+                    let tr = i18n::t(self.s.lang);
+                    let path = self.tree.as_ref().map(|t| t.display_path(id)).unwrap_or_default();
+                    self.error = Some(format!("{}\n{path}", tr.protected_msg));
+                } else if !self.s.disable_delete {
                     self.confirm_delete = Some(id);
                 }
             }
+            Action::SetListView(on) => {
+                self.s.list_view = on;
+                self.anim = None;
+            }
+            Action::Sort(k) => {
+                if self.s.list_sort == k {
+                    self.s.list_asc = !self.s.list_asc;
+                } else {
+                    self.s.list_sort = k;
+                    // Ad A→Z, diğerleri büyükten küçüğe başlasın.
+                    self.s.list_asc = k == SortKey::Name;
+                }
+            }
         }
+    }
+
+    /// Sistem yolları, dosya sistemi kökünün hemen altındakiler, ev klasörünün kendisi ve
+    /// bağlama noktaları silinmez.
+    fn is_protected(&self, id: u32) -> bool {
+        let Some(tree) = &self.tree else { return true };
+        if !self.s.protect_system {
+            return false;
+        }
+        is_protected_path(&tree.path(id))
     }
 
     fn delete_confirmed(&mut self, id: u32) {
@@ -328,7 +377,14 @@ impl App {
             });
             ui.separator();
             b(ui, sel, tr.run_open, Action::RunOpen(self.selected));
-            b(ui, sel && !self.s.disable_delete, tr.delete, Action::AskDelete(self.selected));
+            b(ui, sel && !self.s.disable_delete && !self.is_protected(self.selected), tr.delete, Action::AskDelete(self.selected));
+            ui.separator();
+            if ui.add_enabled(true, Button::new(tr.map).selected(!self.s.list_view)).clicked() {
+                actions.push(Action::SetListView(false));
+            }
+            if ui.add_enabled(true, Button::new(tr.list).selected(self.s.list_view)).clicked() {
+                actions.push(Action::SetListView(true));
+            }
             ui.separator();
             if ui.button(tr.setup).clicked() {
                 ui.ctx().data_mut(|d| d.insert_temp(Id::new("ayarlar-ac"), true));
@@ -366,9 +422,10 @@ impl App {
         // Sağ/alt kenar çizgileri dışarı taşmasın.
         let lay_rect = Rect::from_min_max(map_rect.min, map_rect.max - vec2(1.0, 1.0));
 
-        let key: LayoutKey = (self.view, lay_rect, self.s.bias, (self.s.min_px * 4.0) as i32, self.version);
+        let key: LayoutKey =
+            (self.view, lay_rect, self.s.bias, (self.s.min_px * 4.0) as i32, self.version, self.s.classic_layout);
         if self.layout_key != Some(key) {
-            let params = Params { min_px: self.s.min_px, bias: self.s.bias };
+            let params = Params { min_px: self.s.min_px, bias: self.s.bias, classic: self.s.classic_layout };
             self.items = layout::build(tree, self.view, lay_rect, &params);
             self.layout_key = Some(key);
         }
@@ -484,32 +541,12 @@ impl App {
             self.selected = resp.interact_pointer_pos().map(hit).unwrap_or(NONE);
         }
         if resp.double_clicked() && self.selected != NONE {
-            let n = &tree.nodes[self.selected as usize];
-            if n.is_dir && !n.children.is_empty() {
-                actions.push(Action::ZoomTo(self.selected));
-            }
+            actions.push(double_click_action(tree, self.selected));
         }
         let sel = self.selected;
-        let disable_delete = self.s.disable_delete;
+        let can_delete = sel != NONE && !self.s.disable_delete && !self.is_protected(sel);
         let sel_is_dir = sel != NONE && tree.nodes[sel as usize].is_dir;
-        resp.context_menu(|ui| {
-            if sel == NONE {
-                ui.close();
-                return;
-            }
-            let mut item = |ui: &mut egui::Ui, enabled: bool, text: &str, a: Action| {
-                if ui.add_enabled(enabled, Button::new(text)).clicked() {
-                    actions.push(a);
-                    ui.close();
-                }
-            };
-            item(ui, sel_is_dir, tr.zoom_in, Action::ZoomTo(sel));
-            item(ui, true, tr.run_open, Action::RunOpen(sel));
-            item(ui, true, tr.show_in_fm, Action::ShowInFm(sel));
-            item(ui, true, tr.copy_path, Action::CopyPath(sel));
-            ui.separator();
-            item(ui, !disable_delete, tr.delete, Action::AskDelete(sel));
-        });
+        resp.context_menu(|ui| context_items(ui, sel, sel_is_dir, can_delete, tr, actions));
 
         // Bilgi ipucu.
         if hover != self.hover {
@@ -523,6 +560,167 @@ impl App {
             } else if let Some(pos) = hovered_pos {
                 self.info_tip(&ctx, pos, hover, tr);
             }
+        }
+    }
+
+    /// Görünümdeki klasörün içeriği, boyut çubuklu sıralanabilir liste.
+    fn list(&mut self, ui: &mut egui::Ui, tr: &T, actions: &mut Vec<Action>) {
+        let Some(tree) = &self.tree else { return };
+        let lang = self.s.lang;
+        let dir = self.view;
+        let dnode = &tree.nodes[dir as usize];
+        let parent_size = dnode.size.max(1);
+
+        let mut rows: Vec<u32> = dnode.children.clone();
+        let key = self.s.list_sort;
+        rows.sort_by(|&a, &b| {
+            let (na, nb) = (&tree.nodes[a as usize], &tree.nodes[b as usize]);
+            let ord = match key {
+                SortKey::Name => na.name.to_lowercase().cmp(&nb.name.to_lowercase()),
+                SortKey::Size => na.size.cmp(&nb.size),
+                SortKey::Files => na.files.cmp(&nb.files),
+                SortKey::Date => na.mtime.cmp(&nb.mtime),
+            };
+            if self.s.list_asc { ord } else { ord.reverse() }
+        });
+        let has_up = dnode.parent != NONE;
+
+        let bg = Color32::WHITE;
+        let full = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(full, 0.0, bg);
+        let text = Color32::BLACK;
+        let f = FontId::proportional(13.0);
+
+        // Üst bilgi: yol ve toplam.
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(tree.display_path(dir)).strong().color(text));
+            ui.label(
+                egui::RichText::new(format!(
+                    "  {}  ·  {} {}, {} {}",
+                    i18n::human(dnode.size, lang),
+                    i18n::thousands(dnode.files, lang),
+                    tr.files,
+                    i18n::thousands(dnode.dirs.saturating_sub(1), lang),
+                    tr.folders
+                ))
+                .color(Color32::DARK_GRAY),
+            );
+        });
+        ui.add_space(4.0);
+
+        // Sütunlar (sağdan sabit genişlikler, ad kalan yeri alır).
+        const W_BAR: f32 = 180.0;
+        const W_SIZE: f32 = 90.0;
+        const W_PCT: f32 = 60.0;
+        const W_FILES: f32 = 90.0;
+        const W_DATE: f32 = 150.0;
+        let cols = |r: Rect| {
+            let date = Rect::from_min_max(pos2(r.max.x - W_DATE, r.min.y), r.max);
+            let files = Rect::from_min_max(pos2(date.min.x - W_FILES, r.min.y), pos2(date.min.x, r.max.y));
+            let pct = Rect::from_min_max(pos2(files.min.x - W_PCT, r.min.y), pos2(files.min.x, r.max.y));
+            let size = Rect::from_min_max(pos2(pct.min.x - W_SIZE, r.min.y), pos2(pct.min.x, r.max.y));
+            let bar = Rect::from_min_max(pos2(size.min.x - W_BAR, r.min.y), pos2(size.min.x, r.max.y));
+            let name = Rect::from_min_max(r.min, pos2(bar.min.x, r.max.y));
+            [name, bar, size, pct, files, date]
+        };
+
+        let (hrect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+        let hp = ui.painter_at(hrect);
+        hp.rect_filled(hrect, 0.0, Color32::from_gray(232));
+        let hc = cols(hrect);
+        let headers = [
+            (tr.col_name, Some(SortKey::Name), Align2::LEFT_CENTER),
+            (tr.col_share, None, Align2::LEFT_CENTER),
+            (tr.file_size, Some(SortKey::Size), Align2::RIGHT_CENTER),
+            ("%", None, Align2::RIGHT_CENTER),
+            (tr.files_total, Some(SortKey::Files), Align2::RIGHT_CENTER),
+            (tr.col_date, Some(SortKey::Date), Align2::RIGHT_CENTER),
+        ];
+        for (i, (label, k, align)) in headers.iter().enumerate() {
+            let cell = hc[i].shrink2(vec2(8.0, 0.0));
+            let mut label = label.to_string();
+            if *k == Some(self.s.list_sort) {
+                label.push_str(if self.s.list_asc { " ⏶" } else { " ⏷" });
+            }
+            let pos = if *align == Align2::LEFT_CENTER { cell.left_center() } else { cell.right_center() };
+            hp.text(pos, *align, label, FontId::proportional(13.0), text);
+            if let Some(k) = k {
+                if ui.interact(hc[i], ui.id().with(("baslik", i)), Sense::click()).clicked() {
+                    actions.push(Action::Sort(*k));
+                }
+            }
+        }
+
+        let row_h = 24.0;
+        let total_rows = rows.len() + usize::from(has_up);
+        let selected = self.selected;
+        let disable_delete = self.s.disable_delete;
+        let protect = self.s.protect_system;
+        let mut new_sel = None;
+        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, total_rows, |ui, range| {
+            for i in range {
+                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+                let p = ui.painter_at(rect);
+                let c = cols(rect);
+                if has_up && i == 0 {
+                    if resp.hovered() {
+                        p.rect_filled(rect, 0.0, Color32::from_gray(240));
+                    }
+                    p.text(c[0].left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, format!("⬆  .. ({})", tr.zoom_out), f.clone(), text);
+                    if resp.double_clicked() || resp.clicked() {
+                        actions.push(Action::ZoomOut);
+                    }
+                    continue;
+                }
+                let id = rows[i - usize::from(has_up)];
+                let n = &tree.nodes[id as usize];
+                let fill = if id == selected {
+                    Color32::from_rgb(200, 220, 255)
+                } else if resp.hovered() {
+                    Color32::from_gray(240)
+                } else if i % 2 == 1 {
+                    Color32::from_gray(250)
+                } else {
+                    bg
+                };
+                p.rect_filled(rect, 0.0, fill);
+
+                let icon = if n.is_dir { "🗀" } else { "🗋" };
+                p.text(c[0].left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, icon, f.clone(), text);
+                p.with_clip_rect(c[0].shrink2(vec2(4.0, 0.0)))
+                    .text(c[0].left_center() + vec2(30.0, 0.0), Align2::LEFT_CENTER, &*n.name, f.clone(), text);
+
+                let frac = n.size as f32 / parent_size as f32;
+                let bar = c[1].shrink2(vec2(8.0, 6.0));
+                p.rect_filled(bar, 0.0, Color32::from_gray(235));
+                let filled = Rect::from_min_size(bar.min, vec2((bar.width() * frac).max(1.0), bar.height()));
+                p.rect_filled(filled, 0.0, depth_color(n.depth));
+                p.rect_stroke(bar, 0.0, Stroke::new(1.0, Color32::from_gray(120)), StrokeKind::Inside);
+
+                let right = |r: Rect| r.right_center() - vec2(8.0, 0.0);
+                p.text(right(c[2]), Align2::RIGHT_CENTER, i18n::human(n.size, lang), f.clone(), text);
+                let pct = format!("{:.1}", frac * 100.0);
+                let pct = if lang == Lang::Tr { pct.replace('.', ",") } else { pct };
+                p.text(right(c[3]), Align2::RIGHT_CENTER, pct, f.clone(), text);
+                if n.is_dir {
+                    p.text(right(c[4]), Align2::RIGHT_CENTER, i18n::thousands(n.files, lang), f.clone(), text);
+                }
+                p.text(right(c[5]), Align2::RIGHT_CENTER, i18n::date(n.mtime, lang), f.clone(), Color32::DARK_GRAY);
+
+                if resp.clicked() || resp.secondary_clicked() {
+                    new_sel = Some(id);
+                }
+                if resp.double_clicked() {
+                    actions.push(double_click_action(tree, id));
+                }
+                let can_delete = !disable_delete && !(protect && is_protected_path(&tree.path(id)));
+                resp.context_menu(|ui| context_items(ui, id, n.is_dir, can_delete, tr, actions));
+            }
+        });
+        if let Some(id) = new_sel {
+            self.selected = id;
         }
     }
 
@@ -544,7 +742,7 @@ impl App {
                         ui.style_mut().visuals.override_text_color = Some(Color32::BLACK);
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(if n.is_dir { "📁" } else { "📄" }).size(22.0));
+                            ui.label(egui::RichText::new(if n.is_dir { "🗀" } else { "🗋" }).size(22.0));
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 1.0;
                                 let name = if self.s.tip_full_path { tree.display_path(id) } else { n.name.to_string() };
@@ -743,6 +941,11 @@ impl App {
                     ui.add(egui::Slider::new(&mut s.bias, -4..=4).show_value(false));
                     ui.label(tr.vert);
                 });
+                ui.horizontal(|ui| {
+                    ui.label(tr.layout_style);
+                    ui.selectable_value(&mut s.classic_layout, false, tr.squarified);
+                    ui.selectable_value(&mut s.classic_layout, true, tr.classic);
+                });
                 ui.checkbox(&mut s.show_free, tr.free_space);
                 ui.checkbox(&mut s.one_fs, tr.one_fs);
                 ui.separator();
@@ -765,6 +968,7 @@ impl App {
                 ui.strong(tr.misc);
                 ui.checkbox(&mut s.animated_zoom, tr.animated_zoom);
                 ui.checkbox(&mut s.disable_delete, tr.disable_delete);
+                ui.checkbox(&mut s.protect_system, tr.protect_system);
             });
 
         egui::Window::new(tr.about)
@@ -812,7 +1016,13 @@ impl eframe::App for App {
         self.poll_scan(&ctx);
         let mut actions = Vec::new();
         egui::Panel::top("arac-cubugu").show(ui, |ui| self.toolbar(ui, tr, &mut actions));
-        egui::CentralPanel::no_frame().show(ui, |ui| self.map(ui, tr, &mut actions));
+        egui::CentralPanel::no_frame().show(ui, |ui| {
+            if self.s.list_view && self.tree.is_some() {
+                self.list(ui, tr, &mut actions)
+            } else {
+                self.map(ui, tr, &mut actions)
+            }
+        });
         self.dialogs(&ctx, tr, &mut actions);
         for a in actions {
             self.apply(a, &ctx);
@@ -823,8 +1033,60 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Betikli testler kullanıcının ayarlarını ezmesin.
+        if cfg!(debug_assertions) && std::env::var_os("DH_SCRIPT").is_some() {
+            return;
+        }
         eframe::set_value(storage, eframe::APP_KEY, &self.s);
     }
+}
+
+fn double_click_action(tree: &Tree, id: u32) -> Action {
+    let n = &tree.nodes[id as usize];
+    if n.is_dir && !n.children.is_empty() { Action::ZoomTo(id) } else { Action::RunOpen(id) }
+}
+
+fn context_items(ui: &mut egui::Ui, sel: u32, is_dir: bool, can_delete: bool, tr: &T, actions: &mut Vec<Action>) {
+    if sel == NONE {
+        ui.close();
+        return;
+    }
+    let mut item = |ui: &mut egui::Ui, enabled: bool, text: &str, a: Action| {
+        if ui.add_enabled(enabled, Button::new(text)).clicked() {
+            actions.push(a);
+            ui.close();
+        }
+    };
+    item(ui, is_dir, tr.zoom_in, Action::ZoomTo(sel));
+    item(ui, true, tr.run_open, Action::RunOpen(sel));
+    item(ui, true, tr.show_in_fm, Action::ShowInFm(sel));
+    item(ui, true, tr.copy_path, Action::CopyPath(sel));
+    ui.separator();
+    item(ui, can_delete, tr.delete, Action::AskDelete(sel));
+}
+
+/// Silinmesi sistemi bozabilecek ya da çok geniş yollar.
+fn is_protected_path(path: &Path) -> bool {
+    const SYSTEM: &[&str] = &[
+        "/bin", "/boot", "/dev", "/efi", "/etc", "/lib", "/lib32", "/lib64", "/libx32", "/proc",
+        "/root", "/run", "/sbin", "/snap", "/sys", "/usr",
+    ];
+    if path.parent().is_none_or(|p| p == Path::new("/")) {
+        return true; // "/" ya da /home, /mnt, /var, /opt …
+    }
+    if SYSTEM.iter().any(|s| path.starts_with(s)) {
+        return true;
+    }
+    if path.starts_with("/var") && !path.starts_with("/var/tmp") {
+        return true;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = Path::new(&home);
+        if path == home || home.starts_with(path) {
+            return true;
+        }
+    }
+    scan::is_mount_point(path)
 }
 
 /// Komşu kutuların siyah çizgileri tek piksel olsun diye çerçeve sağ/alt kenardan bir piksel taşar.
@@ -989,6 +1251,16 @@ impl App {
                     .map(|it| it.node)
                     .unwrap_or(NONE)
             }
+            "tipat" => {
+                // Haritada en büyük dosyanın üstünde ipucu (tanıtım görüntüsü için).
+                self.dbg.hover = self
+                    .items
+                    .iter()
+                    .filter(|it| !self.tree.as_ref().unwrap().nodes[it.node as usize].is_dir)
+                    .max_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+                    .map(|it| it.rect.center());
+                self.hover_since = -10.0;
+            }
             "hover" => {
                 self.dbg.hover = self.items.iter().find(|it| it.node == self.selected).map(|it| it.rect.center())
             }
@@ -996,6 +1268,9 @@ impl App {
             "zoomin" => self.apply(Action::ZoomIn, ctx),
             "zoomout" => self.apply(Action::ZoomOut, ctx),
             "free" => self.s.show_free = !self.s.show_free,
+            "list" => self.apply(Action::SetListView(true), ctx),
+            "map" => self.apply(Action::SetListView(false), ctx),
+            "classic" => self.s.classic_layout = !self.s.classic_layout,
             "settings" => self.show_settings = !self.show_settings,
             "open" => self.apply(Action::Open, ctx),
             "menu" => {
